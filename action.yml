@@ -1,0 +1,52 @@
+name: 'ctx-l10n'
+description: 'Context-aware localization engine with docs glossary, strict validation, and self-repair'
+inputs:
+  command:
+    description: 'CLI command: check | glossary | translate'
+    required: false
+    default: 'translate'
+  config:
+    description: 'Path to .ctx-l10n.yml'
+    required: false
+    default: '.ctx-l10n.yml'
+  locales:
+    description: 'Optional comma-separated target locales'
+    required: false
+    default: ''
+  api-key:
+    description: 'OpenAI-compatible API key'
+    required: false
+    default: ''
+  base-url:
+    description: 'OpenAI-compatible base URL'
+    required: false
+    default: ''
+  model:
+    description: 'Model name'
+    required: false
+    default: ''
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+    - name: Install and build ctx-l10n
+      shell: bash
+      run: |
+        cd "${{ github.action_path }}"
+        npm ci --no-audit --no-fund
+        npm run build
+    - name: Run ctx-l10n
+      shell: bash
+      env:
+        CTX_L10N_API_KEY: ${{ inputs.api-key }}
+        CTX_L10N_BASE_URL: ${{ inputs.base-url }}
+        CTX_L10N_MODEL: ${{ inputs.model }}
+      run: |
+        ARGS=("${{ inputs.command }}" "--repo" "${{ github.workspace }}" "--config" "${{ inputs.config }}")
+        if [ -n "${{ inputs.locales }}" ]; then
+          ARGS+=("--locales" "${{ inputs.locales }}")
+        fi
+        node "${{ github.action_path }}/dist/src/entrypoints/cli.js" "${ARGS[@]}"
