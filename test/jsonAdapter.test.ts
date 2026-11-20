@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { loadConfig } from '../src/core/config.js';
 import { translateLocales } from '../src/core/translator.js';
-import { LlmClient } from '../src/core/types.js';
+import { LlmClient, LlmMessage } from '../src/core/types.js';
 
 test('jsonAdapter translates nested Web/CLI JSON from any sourceLocale (e.g. zh-Hans -> en, uk)', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ctx-l10n-json-'));
@@ -32,7 +32,7 @@ test('jsonAdapter translates nested Web/CLI JSON from any sourceLocale (e.g. zh-
     );
 
     const mockLlm: LlmClient = {
-      async chatJson<T>(messages): Promise<T> {
+      async chatJson<T>(messages: LlmMessage[]): Promise<T> {
         const user = JSON.parse(messages[1].content) as { targetLocale: string };
         if (user.targetLocale === 'en') {
           return { translations: { 'nav.home': 'Home', 'nav.user': 'Hello, {{name}}' } } as T;
