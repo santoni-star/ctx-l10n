@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { XMLParser } from 'fast-xml-parser';
-import { PluralEntry, PluralForms, ResourceEntry, StringEntry } from '../core/types.js';
+import { CtxL10nConfig, PluralEntry, PluralForms, ResourceEntry, StringEntry } from '../core/types.js';
+import { FormatAdapter } from './adapter.js';
 
 const parser = new XMLParser({
   ignoreAttributes: false,
@@ -12,14 +13,22 @@ const parser = new XMLParser({
   processEntities: false,
 });
 
-export function localeToValuesDir(locale: string): string {
-  if (locale === 'en' || locale === 'default') return 'values';
+export function localeToValuesDir(locale: string, defaultLocale = 'en'): string {
+  if (locale === defaultLocale || locale === 'default') return 'values';
   if (locale === 'id') return 'values-in';
   if (locale.includes('-') && !locale.startsWith('b+')) {
     const parts = locale.split('-');
     return `values-b+${parts.join('+')}`;
   }
   return `values-${locale}`;
+}
+
+export function localeToBcp47(locale: string): string {
+  if (locale === 'in') return 'id';
+  if (locale.startsWith('b+')) {
+    return locale.slice(2).replace(/\+/g, '-');
+  }
+  return locale;
 }
 
 export function escapeAndroidXmlText(text: string): string {
@@ -106,9 +115,10 @@ export function serializeAndroidXml(
     const entry = translatedMap.get(src.key);
     if (!entry) continue;
     if (entry.kind === 'string') {
-      const fmtAttr = entry.formatted === false || (src.kind === 'string' && src.formatted === false)
-        ? ' formatted="false"'
-        : '';
+      const fmtAttr =
+        entry.formatted === false || (src.kind === 'string' && src.formatted === false)
+          ? ' formatted="false"'
+          : '';
       lines.push(`  <string name="${entry.key}"${fmtAttr}>${escapeAndroidXmlText(entry.value)}</string>`);
     } else {
       lines.push(`  <plurals name="${entry.key}">`);
@@ -122,40 +132,67 @@ export function serializeAndroidXml(
   return lines.join('\n');
 }
 
-export async function readLocaleDirectory(
-  resRoot: string,
-  locale: string,
-  excludeFiles: string[],
-): Promise<Map<string, ResourceEntry[]>> {
-  const dirPath = path.join(resRoot, localeToValuesDir(locale));
-  const result = new Map<string, ResourceEntry[]>();
-  let dirEntries: string[];
-  try {
-    dirEntries = await fs.readdir(dirPath);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      return result;
-    }
-    throw err;
-  }
-
-  for (const file of dirEntries.sort()) {
-    if (!file.endsWith('.xml') || excludeFiles.includes(file)) continue;
-    const content = await fs.readFile(path.join(dirPath, file), 'utf8');
-    result.set(file, parseAndroidXml(content, file));
-  }
-  return result;
-}
-
-export async function writeLocaleFile(
-  resRoot: string,
-  locale: string,
-  fileName: string,
-  xmlContent: string,
+export async function syncLocalesConfigXml(
+  localeConfigFullPath: string,
+  locales: string[],
 ): Promise<string> {
-  const dirPath = path.join(resRoot, localeToValuesDir(locale));
-  await fs.mkdir(dirPath, { recursive: true });
-  const filePath = path.join(dirPath, fileName);
-  await fs.writeFile(filePath, xmlContent, 'utf8');
-  return filePath;
+  const unique = Array.from(new Set(locales.map(localeToBcp47)));
+  const lines = [
+    '<?xml version="1.0" encoding="utf-8"?>',
+    '<locale-config xmlns:android="http://schemas.android.com/apk/res/android">',
+    ...unique.map((l) => `    <locale android:name="${l}" />`),
+    '</locale-config>',
+    '',
+  ];
+  await fs.mkdir(path.dirname(localeConfigFullPath), { recursive: true });
+  await fs.writeFile(localeConfigFullPath, lines.join('\n'), 'utf8');
+  return localeConfigFullPath;
 }
+
+export const androidXmlAdapter: FormatAdapter = {
+  id: 'android-xml',
+
+  async readLocale(repoRoot, config, locale) {
+    const resRoot = path.resolve(repoRoot, config.sourceDir);
+    const defaultLocale = config.defaultLocale ?? config.sourceLocale;
+    const dirPath = path.join(resRoot, localeToValuesDir(locale, defaultLocale));
+    const result = new Map<string, ResourceEntry[]>();
+    let dirEntries: string[];
+    try {
+      dirEntries = await fs.readdir(dirPath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return result;
+      }
+      throw err;
+    }
+
+    for (const file of dirEntries.sort()) {
+      if (!file.endsWith('.xml') || config.excludeFiles.includes(file)) continue;
+      const content = await fs.readFile(path.join(dirPath, file), 'utf8');
+      result.set(file, parseAndroidXml(content, file));
+    }
+    return result;
+  },
+
+  async writeLocaleFile(repoRoot, config, locale, fileName, sourceOrder, translatedMap) {
+    const resRoot = path.resolve(repoRoot, config.sourceDir);
+    const defaultLocale = config.defaultLocale ?? config.sourceLocale;
+    const dirPath = path.join(resRoot, localeToValuesDir(locale, defaultLocale));
+    await fs.mkdir(dirPath, { recursive: true });
+    const filePath = path.join(dirPath, fileName);
+    await fs.writeFile(filePath, serializeAndroidXml(sourceOrder, translatedMap), 'utf8');
+    return filePath;
+  },
+
+  async afterTranslate(repoRoot, config, locales) {
+    if (!config.android.syncLocaleConfig) return [];
+    const target = path.resolve(repoRoot, config.android.localeConfigPath);
+    const written = await syncLocalesConfigXml(target, [
+      config.sourceLocale,
+      ...config.targetLocales,
+      ...locales,
+    ]);
+    return [written];
+  },
+};

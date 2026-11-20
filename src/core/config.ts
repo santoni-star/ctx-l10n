@@ -2,14 +2,15 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
-import { CtxL10nConfig } from './types.js';
+import { AdapterType, CtxL10nConfig } from './types.js';
 
 const ConfigSchema = z.object({
   version: z.literal(1).default(1),
   projectName: z.string().min(1).default('App'),
-  adapter: z.enum(['android-xml']).default('android-xml'),
+  adapter: z.enum(['android-xml', 'json', 'markdown']).default('android-xml'),
   sourceDir: z.string().min(1).default('app/src/main/res'),
   sourceLocale: z.string().min(1).default('en'),
+  defaultLocale: z.string().min(1).optional(),
   targetLocales: z.array(z.string().min(1)).default(['uk']),
   excludeFiles: z.array(z.string()).default(['colors.xml', 'styles.xml']),
   docs: z.array(z.string()).default(['README.md']),
@@ -19,6 +20,12 @@ const ConfigSchema = z.object({
   batchSize: z.number().int().min(1).max(100).default(30),
   maxRepairAttempts: z.number().int().min(0).max(5).default(2),
   backTranslationCheck: z.boolean().default(false),
+  android: z
+    .object({
+      syncLocaleConfig: z.boolean().default(false),
+      localeConfigPath: z.string().default('app/src/main/res/xml/locales_config.xml'),
+    })
+    .default({}),
   llm: z
     .object({
       baseUrl: z.string().default(process.env.CTX_L10N_BASE_URL ?? process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1'),
@@ -52,15 +59,32 @@ export async function loadConfig(repoRoot: string, configPath?: string): Promise
   };
 }
 
-export function renderDefaultConfig(projectName: string, targetLocales: string[] = ['uk']): string {
-  const cfg = {
+export function renderDefaultConfig(
+  projectName: string,
+  options: {
+    adapter?: AdapterType;
+    sourceLocale?: string;
+    targetLocales?: string[];
+  } = {},
+): string {
+  const adapter = options.adapter ?? 'android-xml';
+  const sourceLocale = options.sourceLocale ?? 'en';
+  const targetLocales = options.targetLocales ?? ['uk'];
+  const defaultSourceDir =
+    adapter === 'android-xml'
+      ? 'app/src/main/res'
+      : adapter === 'json'
+        ? 'locales'
+        : 'docs';
+
+  const cfg: Record<string, unknown> = {
     version: 1,
     projectName,
-    adapter: 'android-xml',
-    sourceDir: 'app/src/main/res',
-    sourceLocale: 'en',
+    adapter,
+    sourceDir: defaultSourceDir,
+    sourceLocale,
     targetLocales,
-    excludeFiles: ['colors.xml', 'styles.xml'],
+    excludeFiles: adapter === 'android-xml' ? ['colors.xml', 'styles.xml'] : [],
     docs: ['README.md'],
     glossaryPath: '.ctx-l10n.glossary.json',
     statePath: '.ctx-l10n.state.json',
@@ -75,5 +99,11 @@ export function renderDefaultConfig(projectName: string, targetLocales: string[]
       temperature: 0.1,
     },
   };
+  if (adapter === 'android-xml') {
+    cfg.android = {
+      syncLocaleConfig: true,
+      localeConfigPath: 'app/src/main/res/xml/locales_config.xml',
+    };
+  }
   return YAML.stringify(cfg);
 }

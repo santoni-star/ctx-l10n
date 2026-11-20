@@ -1,10 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {
-  readLocaleDirectory,
-  serializeAndroidXml,
-  writeLocaleFile,
-} from '../adapters/androidXml.js';
+import { getAdapter } from '../adapters/registry.js';
 import { computeDiff, entryId, loadSnapshotState, saveSnapshotState } from './diff.js';
 import { buildGlossaryFromDocs, collectDocsText, loadGlossary, saveGlossary } from './docsContext.js';
 import {
@@ -54,18 +50,19 @@ function toTranslatedEntry(source: ResourceEntry, raw: string | PluralForms): Re
 }
 
 function buildTranslationSystemPrompt(
-  locale: string,
+  sourceLocale: string,
+  targetLocale: string,
   glossary: ProjectGlossary | null,
   pluralQuantities: string[],
 ): string {
   const parts = [
-    `You are a senior software localizer translating UI strings into locale "${locale}".`,
+    `You are a senior software localizer translating UI and documentation strings from "${sourceLocale}" into "${targetLocale}".`,
     'Rules:',
     '1. Return ONLY a JSON object: { "translations": { "<key>": "<string>" or { "<qty>": "<string>" } } }.',
-    '2. Preserve ALL placeholders verbatim (%1$s, %2$d, %d, %s, %%, {{user}}, {{char}}) and HTML/XML tags.',
-    `3. For <plurals>, provide ALL required CLDR quantities for "${locale}": ${pluralQuantities.join(', ')}.`,
+    '2. Preserve ALL placeholders verbatim (%1$s, %2$d, %d, %s, %%, {{var}}, {var}, ${var}), inline code (`...`), URLs, and HTML/XML tags.',
+    `3. For <plurals>, provide ALL required CLDR quantities for "${targetLocale}": ${pluralQuantities.join(', ')}.`,
     '4. If the source plural includes %d or %1$d, include it in EVERY plural quantity form.',
-    '5. Keep UI copy concise and natural. Never output Chinese/CJK characters unless the target locale is zh/ja.',
+    '5. Keep UI copy concise and natural in the target language.',
   ];
   if (glossary) {
     parts.push(`Project context (${glossary.projectName}): ${glossary.summary}`);
@@ -85,7 +82,8 @@ function buildTranslationSystemPrompt(
 
 async function translateBatchWithRepair(
   llm: LlmClient,
-  locale: string,
+  sourceLocale: string,
+  targetLocale: string,
   fileName: string,
   batch: DiffItem[],
   glossary: ProjectGlossary | null,
@@ -95,8 +93,8 @@ async function translateBatchWithRepair(
   repairedKeys: number;
   flagged: FlaggedItem[];
 }> {
-  const pluralQuantities = requiredPluralQuantities(locale);
-  const systemPrompt = buildTranslationSystemPrompt(locale, glossary, pluralQuantities);
+  const pluralQuantities = requiredPluralQuantities(targetLocale);
+  const systemPrompt = buildTranslationSystemPrompt(sourceLocale, targetLocale, glossary, pluralQuantities);
   const sourceEntries = batch.map((b) => b.entry);
 
   const initialResp = await llm.chatJson<TranslationPayload>([
@@ -105,7 +103,8 @@ async function translateBatchWithRepair(
       role: 'user',
       content: JSON.stringify({
         file: fileName,
-        targetLocale: locale,
+        sourceLocale,
+        targetLocale,
         entries: formatSourceEntriesForPrompt(sourceEntries),
       }),
     },
@@ -117,7 +116,7 @@ async function translateBatchWithRepair(
   for (const src of sourceEntries) {
     const raw = initialResp.translations?.[src.key];
     const candidate = raw !== undefined ? toTranslatedEntry(src, raw) : undefined;
-    const issues = validateEntry(src, candidate, locale);
+    const issues = validateEntry(src, candidate, targetLocale);
     if (issues.length === 0 && candidate) {
       results.set(src.key, candidate);
     } else {
@@ -152,7 +151,7 @@ async function translateBatchWithRepair(
     for (const item of remaining) {
       const raw = repairResp.translations?.[item.source.key];
       const candidate = raw !== undefined ? toTranslatedEntry(item.source, raw) : item.current;
-      const issues = validateEntry(item.source, candidate, locale);
+      const issues = validateEntry(item.source, candidate, targetLocale);
       if (issues.length === 0 && candidate) {
         results.set(item.source.key, candidate);
         repairedKeys++;
@@ -171,7 +170,7 @@ async function translateBatchWithRepair(
     flagged.push({
       file: fileName,
       key: item.source.key,
-      locale,
+      locale: targetLocale,
       reason: item.issues.map((i) => `${i.code}: ${i.message}`).join('; '),
       source: item.source.kind === 'string' ? item.source.value : item.source.forms,
       translation: item.current
@@ -189,12 +188,12 @@ export async function checkLocales(
   repoRoot: string,
   config: CtxL10nConfig,
 ): Promise<LocaleRunReport[]> {
-  const resRoot = path.resolve(repoRoot, config.sourceDir);
-  const sourceByFile = await readLocaleDirectory(resRoot, config.sourceLocale, config.excludeFiles);
+  const adapter = getAdapter(config.adapter);
+  const sourceByFile = await adapter.readLocale(repoRoot, config, config.sourceLocale);
   const reports: LocaleRunReport[] = [];
 
   for (const locale of config.targetLocales) {
-    const targetByFile = await readLocaleDirectory(resRoot, locale, config.excludeFiles);
+    const targetByFile = await adapter.readLocale(repoRoot, config, locale);
     const issues: ValidationIssue[] = [];
     let totalSourceKeys = 0;
     let presentKeys = 0;
@@ -244,8 +243,8 @@ export async function translateLocales(
   llm: LlmClient,
   options: { dryRun?: boolean; locales?: string[] } = {},
 ): Promise<TranslateRunReport> {
-  const resRoot = path.resolve(repoRoot, config.sourceDir);
-  const sourceByFile = await readLocaleDirectory(resRoot, config.sourceLocale, config.excludeFiles);
+  const adapter = getAdapter(config.adapter);
+  const sourceByFile = await adapter.readLocale(repoRoot, config, config.sourceLocale);
   const allSourceEntries = Array.from(sourceByFile.values()).flat();
   const prevState = await loadSnapshotState(repoRoot, config.statePath);
   const glossary = await loadGlossary(repoRoot, config.glossaryPath);
@@ -255,7 +254,7 @@ export async function translateLocales(
   const filesWritten: string[] = [];
 
   for (const locale of localesToRun) {
-    const targetByFile = await readLocaleDirectory(resRoot, locale, config.excludeFiles);
+    const targetByFile = await adapter.readLocale(repoRoot, config, locale);
     const targetById = new Map<string, ResourceEntry>();
     for (const [fileName, entries] of targetByFile.entries()) {
       for (const e of entries) {
@@ -287,6 +286,7 @@ export async function translateLocales(
         const batch = fileDiff.slice(i, i + config.batchSize);
         const batchResult = await translateBatchWithRepair(
           llm,
+          config.sourceLocale,
           locale,
           fileName,
           batch,
@@ -306,8 +306,14 @@ export async function translateLocales(
       }
 
       if (!options.dryRun && fileDiff.length > 0) {
-        const xml = serializeAndroidXml(srcEntries, mergedMap);
-        const written = await writeLocaleFile(resRoot, locale, fileName, xml);
+        const written = await adapter.writeLocaleFile(
+          repoRoot,
+          config,
+          locale,
+          fileName,
+          srcEntries,
+          mergedMap,
+        );
         filesWritten.push(written);
       }
     }
@@ -324,6 +330,10 @@ export async function translateLocales(
   }
 
   if (!options.dryRun) {
+    if (adapter.afterTranslate) {
+      const extraWritten = await adapter.afterTranslate(repoRoot, config, localesToRun);
+      filesWritten.push(...extraWritten);
+    }
     await saveSnapshotState(repoRoot, config.statePath, allSourceEntries);
     const reportMd = formatTranslateReportMarkdown({ locales: localeReports, filesWritten });
     const reportFullPath = path.resolve(repoRoot, config.reportPath);
@@ -337,7 +347,7 @@ export function formatTranslateReportMarkdown(report: TranslateRunReport): strin
   const lines: string[] = [
     '# ctx-l10n Localization Report',
     '',
-    '> Machine-translated delta with automated placeholder, XML tag, and CLDR plural verification.',
+    '> Machine-translated delta with automated placeholder, XML/HTML tag, and CLDR plural verification.',
     '',
     '| Locale | Total | Reused | Translated | Self-repaired | Flagged | Remaining issues |',
     '|---|---:|---:|---:|---:|---:|---:|',

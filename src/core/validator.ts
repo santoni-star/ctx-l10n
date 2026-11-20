@@ -1,32 +1,13 @@
 import { PluralEntry, ResourceEntry, ValidationIssue } from './types.js';
 
-const PLACEHOLDER_REGEX = /%(?:\d+\$)?[-#+ 0,(]*\d*(?:\.\d+)?[a-zA-Z]|%%|\{\{[a-zA-Z0-9_]+\}\}/g;
-const HTML_TAG_NAMES = '(?:b|i|u|s|a|p|br|hr|em|strong|small|big|sub|sup|font|span|div|code|pre|tt|li|ul|ol|xliff:g)';
+const PLACEHOLDER_REGEX =
+  /%(?:\d+\$)?[-#+ 0,(]*\d*(?:\.\d+)?[a-zA-Z]|%%|\{\{[a-zA-Z0-9_.-]+\}\}|\$\{[a-zA-Z0-9_.-]+\}|\{[a-zA-Z0-9_]+\}/g;
+const HTML_TAG_NAMES =
+  '(?:b|i|u|s|a|p|br|hr|em|strong|small|big|sub|sup|font|span|div|code|pre|tt|li|ul|ol|xliff:g)';
 const TAG_REGEX = new RegExp(`<\\/?${HTML_TAG_NAMES}(?:\\s+[^>]*)?\\/?>`, 'gi');
 const CJK_REGEX = /[\u4E00-\u9FFF]/;
 
-const CLDR_REQUIRED_PLURALS: Record<string, string[]> = {
-  uk: ['one', 'few', 'many', 'other'],
-  ru: ['one', 'few', 'many', 'other'],
-  pl: ['one', 'few', 'many', 'other'],
-  cs: ['one', 'few', 'many', 'other'],
-  ro: ['one', 'few', 'other'],
-  ar: ['zero', 'one', 'two', 'few', 'many', 'other'],
-  en: ['one', 'other'],
-  de: ['one', 'other'],
-  fr: ['one', 'many', 'other'],
-  es: ['one', 'many', 'other'],
-  it: ['one', 'many', 'other'],
-  pt: ['one', 'many', 'other'],
-  nl: ['one', 'other'],
-  tr: ['one', 'other'],
-  ja: ['other'],
-  ko: ['other'],
-  vi: ['other'],
-  id: ['other'],
-  in: ['other'],
-  hi: ['one', 'other'],
-};
+const pluralCache = new Map<string, string[]>();
 
 export function extractPlaceholders(text: string): string[] {
   return text.match(PLACEHOLDER_REGEX) ?? [];
@@ -35,7 +16,7 @@ export function extractPlaceholders(text: string): string[] {
 export function extractTags(text: string): string[] {
   const tags: string[] = [];
   for (const match of text.matchAll(TAG_REGEX)) {
-    tags.push(match[0].startsWith('</') ? `/${match[1]}` : match[1]);
+    tags.push(match[0].startsWith('</') ? `/${match[1].toLowerCase()}` : match[1].toLowerCase());
   }
   return tags;
 }
@@ -43,6 +24,11 @@ export function extractTags(text: string): string[] {
 function isCjkLocale(locale: string): boolean {
   const norm = locale.toLowerCase();
   return norm.startsWith('zh') || norm.startsWith('ja');
+}
+
+function isCyrillicLocale(locale: string): boolean {
+  const base = locale.toLowerCase().split(/[-+_]/)[0];
+  return ['uk', 'ru', 'be', 'bg', 'sr', 'mk', 'kk', 'ky', 'tg', 'mn'].includes(base);
 }
 
 function validateTextPair(
@@ -64,6 +50,10 @@ function validateTextPair(
 
   if (locale.toLowerCase().startsWith('uk') && /[ыэъёЫЭЪЁ]/.test(targetText)) {
     issues.push({ file, key, locale, code: 'foreign_script', message: 'Contains non-Ukrainian Cyrillic letters' });
+  }
+
+  if (!isCyrillicLocale(locale) && /[\u0400-\u04FF]/.test(targetText)) {
+    issues.push({ file, key, locale, code: 'foreign_script', message: 'Contains unexpected Cyrillic characters' });
   }
 
   const srcPh = extractPlaceholders(sourceText);
@@ -108,8 +98,21 @@ function validateTextPair(
 }
 
 export function requiredPluralQuantities(locale: string): string[] {
-  const base = locale.toLowerCase().split(/[-+]/)[0];
-  return CLDR_REQUIRED_PLURALS[locale.toLowerCase()] ?? CLDR_REQUIRED_PLURALS[base] ?? ['one', 'other'];
+  const cached = pluralCache.get(locale);
+  if (cached) return cached;
+
+  try {
+    const normalized = locale.replace(/^b\+/, '').replace(/\+/g, '-');
+    const categories = new Intl.PluralRules(normalized).resolvedOptions().pluralCategories;
+    if (categories.length > 0) {
+      const list = [...categories];
+      pluralCache.set(locale, list);
+      return list;
+    }
+  } catch {
+    // Fallback below for non-standard tags
+  }
+  return ['one', 'other'];
 }
 
 export function validateEntry(

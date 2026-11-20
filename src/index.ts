@@ -5,4 +5,8 @@ export * from './core/docsContext.js';
 export * from './core/openaiClient.js';
 export * from './core/validator.js';
 export * from './core/translator.js';
+export * from './adapters/adapter.js';
+export * from './adapters/registry.js';
 export * from './adapters/androidXml.js';
+export * from './adapters/jsonAdapter.js';
+export * from './adapters/markdownAdapter.js';

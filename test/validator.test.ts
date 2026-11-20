@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ResourceEntry } from '../src/core/types.js';
-import { validateEntry } from '../src/core/validator.js';
+import { requiredPluralQuantities, validateEntry } from '../src/core/validator.js';
 
-test('validateEntry catches placeholder mismatch and CJK/Russian leaks in uk', () => {
+test('validateEntry catches placeholder mismatch and foreign script leaks across any locale', () => {
   const src: ResourceEntry = { kind: 'string', file: 's.xml', key: 'k', value: 'Hello %1$s (%2$d)' };
   const badPh: ResourceEntry = { kind: 'string', file: 's.xml', key: 'k', value: 'Привіт %1$s' };
   assert.equal(validateEntry(src, badPh, 'uk')[0]?.code, 'placeholder_mismatch');
@@ -11,11 +11,19 @@ test('validateEntry catches placeholder mismatch and CJK/Russian leaks in uk', (
   const cjk: ResourceEntry = { kind: 'string', file: 's.xml', key: 'k', value: 'Привіт %1$s (%2$d) 你好' };
   assert.equal(validateEntry(src, cjk, 'uk')[0]?.code, 'foreign_script');
 
-  const ru: ResourceEntry = { kind: 'string', file: 's.xml', key: 'k', value: 'Привет ы %1$s (%2$d)' };
-  assert.equal(validateEntry(src, ru, 'uk')[0]?.code, 'foreign_script');
+  const cyrInEn: ResourceEntry = { kind: 'string', file: 's.xml', key: 'k', value: 'Hello П %1$s (%2$d)' };
+  assert.equal(validateEntry(src, cyrInEn, 'en')[0]?.code, 'foreign_script');
 
-  const ok: ResourceEntry = { kind: 'string', file: 's.xml', key: 'k', value: 'Привіт %1$s (%2$d)' };
-  assert.equal(validateEntry(src, ok, 'uk').length, 0);
+  const webSrc: ResourceEntry = { kind: 'string', file: 'c.json', key: 'k', value: 'Hi {name}, {{count}} items' };
+  const webOk: ResourceEntry = { kind: 'string', file: 'c.json', key: 'k', value: 'Привіт {name}, {{count}} ел.' };
+  assert.equal(validateEntry(webSrc, webOk, 'uk').length, 0);
+});
+
+test('requiredPluralQuantities uses Intl.PluralRules for any world language', () => {
+  assert.deepEqual(requiredPluralQuantities('uk'), ['one', 'few', 'many', 'other']);
+  assert.deepEqual(requiredPluralQuantities('ar'), ['zero', 'one', 'two', 'few', 'many', 'other']);
+  assert.deepEqual(requiredPluralQuantities('ja'), ['other']);
+  assert.deepEqual(requiredPluralQuantities('en'), ['one', 'other']);
 });
 
 test('validateEntry enforces Ukrainian CLDR plural forms and %d presence', () => {

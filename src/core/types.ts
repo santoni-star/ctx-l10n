@@ -1,5 +1,7 @@
 export type PluralForms = Record<string, string>;
 
+export type AdapterType = 'android-xml' | 'json' | 'markdown';
+
 export interface StringEntry {
   kind: 'string';
   file: string;
@@ -90,9 +92,10 @@ export interface LlmClient {
 export interface CtxL10nConfig {
   version: 1;
   projectName: string;
-  adapter: 'android-xml';
+  adapter: AdapterType;
   sourceDir: string;
   sourceLocale: string;
+  defaultLocale?: string;
   targetLocales: string[];
   excludeFiles: string[];
   docs: string[];
@@ -102,6 +105,10 @@ export interface CtxL10nConfig {
   batchSize: number;
   maxRepairAttempts: number;
   backTranslationCheck: boolean;
+  android: {
+    syncLocaleConfig: boolean;
+    localeConfigPath: string;
+  };
   llm: {
     baseUrl: string;
     model: string;

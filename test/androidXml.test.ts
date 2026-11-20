@@ -1,17 +1,22 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import {
   escapeAndroidXmlText,
   localeToValuesDir,
   parseAndroidXml,
   serializeAndroidXml,
+  syncLocalesConfigXml,
 } from '../src/adapters/androidXml.js';
 
 test('localeToValuesDir maps default, id, and BCP-47 script tags', () => {
-  assert.equal(localeToValuesDir('en'), 'values');
-  assert.equal(localeToValuesDir('uk'), 'values-uk');
-  assert.equal(localeToValuesDir('id'), 'values-in');
-  assert.equal(localeToValuesDir('zh-Hans'), 'values-b+zh+Hans');
+  assert.equal(localeToValuesDir('en', 'en'), 'values');
+  assert.equal(localeToValuesDir('zh-Hans', 'zh-Hans'), 'values');
+  assert.equal(localeToValuesDir('uk', 'en'), 'values-uk');
+  assert.equal(localeToValuesDir('id', 'en'), 'values-in');
+  assert.equal(localeToValuesDir('zh-Hans', 'en'), 'values-b+zh+Hans');
 });
 
 test('parseAndroidXml skips translatable=false and parses strings + plurals', () => {
@@ -54,4 +59,19 @@ test('serializeAndroidXml escapes quotes, ampersands, and preserves order', () =
   assert.match(out, /<string name="a">Ім\\'я &amp; &lt;b&gt;<\/string>/);
   assert.match(out, /<string name="b" formatted="false">80%-110%<\/string>/);
   assert.equal(escapeAndroidXmlText("it's ok"), "it\\'s ok");
+});
+
+test('syncLocalesConfigXml generates Android Per-App Language config', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ctx-l10n-lc-'));
+  try {
+    const outPath = path.join(tmp, 'locales_config.xml');
+    await syncLocalesConfigXml(outPath, ['en', 'uk', 'b+zh+Hans', 'in']);
+    const content = await fs.readFile(outPath, 'utf8');
+    assert.match(content, /<locale android:name="en" \/>/);
+    assert.match(content, /<locale android:name="uk" \/>/);
+    assert.match(content, /<locale android:name="zh-Hans" \/>/);
+    assert.match(content, /<locale android:name="id" \/>/);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
 });

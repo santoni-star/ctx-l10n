@@ -4,6 +4,7 @@ import path from 'node:path';
 import { loadConfig, renderDefaultConfig } from '../core/config.js';
 import { OpenAiCompatibleClient } from '../core/openaiClient.js';
 import { checkLocales, syncGlossary, translateLocales } from '../core/translator.js';
+import { AdapterType } from '../core/types.js';
 
 function getFlag(args: string[], name: string): string | undefined {
   const idx = args.indexOf(name);
@@ -22,9 +23,18 @@ async function main(): Promise<void> {
 
   if (command === 'init') {
     const projectName = getFlag(rest, '--name') ?? path.basename(repoRoot);
-    const locales = (getFlag(rest, '--locales') ?? 'uk').split(',').map((s) => s.trim()).filter(Boolean);
+    const adapter = (getFlag(rest, '--adapter') ?? 'android-xml') as AdapterType;
+    const sourceLocale = getFlag(rest, '--source') ?? 'en';
+    const targetLocales = (getFlag(rest, '--locales') ?? 'uk')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
     const outPath = path.resolve(repoRoot, configPath ?? '.ctx-l10n.yml');
-    await fs.writeFile(outPath, renderDefaultConfig(projectName, locales), 'utf8');
+    await fs.writeFile(
+      outPath,
+      renderDefaultConfig(projectName, { adapter, sourceLocale, targetLocales }),
+      'utf8',
+    );
     console.log(`Created ${outPath}`);
     return;
   }
@@ -77,7 +87,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.log(`Usage: ctx-l10n <init|glossary|check|translate> [--repo <dir>] [--config <file>] [--locales uk,pl] [--dry-run]`);
+  console.log(
+    'Usage: ctx-l10n <init|glossary|check|translate> [--repo <dir>] [--config <file>] [--adapter android-xml|json|markdown] [--source en] [--locales uk,pl] [--dry-run]',
+  );
 }
 
 main().catch((err) => {
