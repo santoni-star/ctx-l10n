@@ -97,6 +97,8 @@ function validateTextPair(
   return issues;
 }
 
+const PLURAL_ORDER = ['zero', 'one', 'two', 'few', 'many', 'other'];
+
 export function requiredPluralQuantities(locale: string): string[] {
   const cached = pluralCache.get(locale);
   if (cached) return cached;
@@ -105,7 +107,9 @@ export function requiredPluralQuantities(locale: string): string[] {
     const normalized = locale.replace(/^b\+/, '').replace(/\+/g, '-');
     const categories = new Intl.PluralRules(normalized).resolvedOptions().pluralCategories;
     if (categories.length > 0) {
-      const list = [...categories];
+      const list = [...categories].sort(
+        (a, b) => PLURAL_ORDER.indexOf(a) - PLURAL_ORDER.indexOf(b),
+      );
       pluralCache.set(locale, list);
       return list;
     }
